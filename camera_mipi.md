@@ -73,8 +73,23 @@ D-PHY可能包含
 仅通过以上的认识并不足以理解mipi的信号,接下来通过纯v代码来继续学习。
 
 ***
-mipi_csi_16_nx的学习历程
+USB_C_Industrial_Camera_FPGA_USB3-master的学习历程
 ---
+补充一点verilog语法知识：
+```verilog
+reg [31:0] dword;
+reg [7:0] byte0;
+reg [7:0] byte1;
+reg [7:0] byte2;
+reg [7:0] byte3;
+
+assign byte0 = dword[0 +: 8];    // Same as dword[7:0]
+assign byte1 = dword[8 +: 8];    // Same as dword[15:8]
+assign byte2 = dword[16 +: 8];   // Same as dword[23:16]
+assign byte3 = dword[24 +: 8];   // Same as dword[31:24]
+```
+
+以下是该例程的top节选。
 ```verilog
 module mipi_csi_16_nx(	//reset_in,
 	mipi_clk_p_in,
@@ -96,13 +111,20 @@ module mipi_csi_16_nx(	//reset_in,
 );
 
 parameter MIPI_LANES = 2;			//number of mipi lanes with camera. Only 2 or 4
+parameter MIPI_GEAR = 8;			//deserializer gearing ratio. Only 8 or 16 
+parameter MIPI_PIXEL_PER_CLOCK = 2; //number of pixels pipeline process in one clock cycle. With 2 Lanes and Gear 8 only 2 or 4 with gear 16 only 4 , With 4 Lanes only 4 or 8 
+parameter MAX_PIXEL_WIDTH = 12;   	//max pixel width , 14bit (RAW14) , IMX219 has 10bit while IMX477 has 12bit and IMX294 has 14bit
 
 input mipi_clk_p_in;
 input mipi_clk_n_in;
 input [MIPI_LANES-1:0]mipi_data_p_in;
 input [MIPI_LANES-1:0]mipi_data_n_in;
 
-csi_dphy  mipi_csi_phy_inst1(.sync_clk_i(osc_clk), 
+wire [((MIPI_LANES * MIPI_GEAR) - 1) :0]mipi_data_raw_hw;    
+wire [((MIPI_LANES * MIPI_GEAR) - 1) :0]mipi_data_raw;  
+
+csi_dphy  mipi_csi_phy_inst1(
+        .sync_clk_i(osc_clk), 
 	.sync_rst_i(1'b0), 
 	.lmmi_clk_i(1'b0), 
 	.lmmi_resetn_i(1'b0), 
@@ -136,13 +158,51 @@ csi_dphy  mipi_csi_phy_inst1(.sync_clk_i(osc_clk),
 显然相机能提供的信号主要就是差分时钟和差分数据信号,摄像头一般能给到的raw数据有多种,
 不同的格式的处理方式也各不一致。
 
+**在本例程中，仅有2位的mipi物理信号，通过dphy整合后，输出的是16位的raw数据。** 目前该信号的具体组成尚不清楚。
+
 dphy输出的hs、lp信号的理解是接下来的关键。
-以下是在该例程中，视频流数据的流向：
+```verilog
+assign mipi_data_raw = mipi_data_raw_hw;
+
+line_reset_generator line_reset_generator_ins0(.clk_i(mipi_byte_clock),
+	.lp_data_i(lp_rx_data_p[0]),
+  .line_reset_o(line_reset));
+
+generate 
+genvar i;
+	if (SAMPLE_GENERATOR)
+	begin
+		wire dummy_byte_valid;	//sample generator should never be active unless debugging 
+		assign is_byte_valid = {dummy_byte_valid,dummy_byte_valid};			
+		sample_generator sample_generator_ins( .framesync_i(frame_sync),
+			.clk_i(mipi_byte_clock),
+			.reset_i(line_reset),
+		        .byte_o(byte_aligned),
+			.byte_valid_o(dummy_byte_valid));
+	end
+	else
+	begin
+		for (i = 0;i < MIPI_LANES; i = i +1) 
+		begin
+			mipi_csi_rx_byte_aligner #(.MIPI_GEAR(MIPI_GEAR))mipi_rx_byte_aligner_0(
+                        .clk_i(mipi_byte_clock),
+			.reset_i(line_reset),
+			.byte_i(mipi_data_raw[(MIPI_GEAR * i) +: MIPI_GEAR]),//0~7
+			.byte_o( byte_aligned[(MIPI_GEAR * i) +: MIPI_GEAR]),//8~15
+			.byte_valid_o(is_byte_valid[i]));
+		end
+	end
+endgenerate 
+```
+lp_rx_data_p作为lp的数据输出，最终流入到了line_reset_generator模块当中，并未起到数据传输作用，具体原因目前还不明确。
+但是可以看到mipi_data_raw_hw数据确实最终进入了数据处理部分。
+
+以下是在该例程中，有效视频流数据的流向：
 
 ```
 |camera| 
 - |csi_dphy| 
-- |mipi_csi_rx_byte_aligner|
+- |mipi_csi_rx_byte_aligner|//多通道例化
 - |mipi_csi_rx_lane_aligner|
 - |mipi_csi_rx_packet_decoder_*b*lane|   
 - |mipi_csi_rx_raw_depacker_*b*lane|
@@ -151,3 +211,29 @@ dphy输出的hs、lp信号的理解是接下来的关键。
 - |output_reformatter|//USB3.0输出
 - |上位机显示|
 ```
+
+**DPHY给出的16位raw信号被一分二，分别传入各自的mipi_csi_rx_byte_aligner中，每八位分开处理。**
+
+### mipi_csi_rx_byte_aligner模块的分析
+该模块的工作原理与DPHY的输出信号有关。
+
+该模块的核心语句如下：
+```verilog
+input [(MIPI_GEAR-1):0]byte_i;
+output reg [(MIPI_GEAR-1):0]byte_o;
+
+last_byte 	<= byte_i;
+last_byte_2     <= last_byte;
+last_word 	<= word;
+		
+byte_o <= last_word[sync_offset +:MIPI_GEAR]; // from offset MIPI_GEAR upwards
+		
+byte_valid_o <= valid_reg;
+		
+if (synced & !valid_reg)// also check for valid_reg to be intive, this make sure that once sync is detected no further sync are concidered till next reset
+begin
+	sync_offset <= offset;
+	valid_reg <= 1'h1;
+end
+```
+
