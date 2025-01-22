@@ -101,9 +101,40 @@ input mipi_clk_p_in;
 input mipi_clk_n_in;
 input [MIPI_LANES-1:0]mipi_data_p_in;
 input [MIPI_LANES-1:0]mipi_data_n_in;
+
+csi_dphy  mipi_csi_phy_inst1(.sync_clk_i(osc_clk), 
+	.sync_rst_i(1'b0), 
+	.lmmi_clk_i(1'b0), 
+	.lmmi_resetn_i(1'b0), 
+	.lmmi_wdata_i(4'b0), 
+	.lmmi_wr_rdn_i(1'b0), 
+	.lmmi_offset_i(5'b0), 
+	.lmmi_request_i(1'b0), 
+	.lmmi_ready_o(), 
+	.lmmi_rdata_o(), 
+	.lmmi_rdata_valid_o(), 
+	//.hs_rx_en_i(1'b1), 
+	.hs_rx_clk_en_i(1'b1),  //new
+	.hs_rx_data_en_i(1'b1), //new
+	.hs_data_des_en_i(1'b1), //new
+	.hs_rx_data_o(mipi_data_raw_hw), 
+	.hs_rx_data_sync_o(sync_pulse), 
+	.lp_rx_en_i(1'b1), 
+	.lp_rx_data_p_o(lp_rx_data_p), 
+	.lp_rx_data_n_o(), 
+	.lp_rx_clk_p_o(lp_rx_clk_p), 
+	.lp_rx_clk_n_o(), 
+	.pll_lock_i(1'b1), 
+	.clk_p_io(mipi_clk_p_in), 
+	.clk_n_io(mipi_clk_n_in), 
+	.data_p_io(mipi_data_p_in), 
+	.data_n_io(mipi_data_n_in), 
+	.pd_dphy_i(1'b0), 
+	.clk_byte_o(mipi_byte_clock), 
+	.ready_o()) ;
 ```
 显然相机能提供的信号主要就是差分时钟和差分数据信号,摄像头一般能给到的raw数据有多种,
 不同的格式的处理方式也各不一致。
 
-
+dphy输出的hs、lp信号的理解是接下来的关键。
 
