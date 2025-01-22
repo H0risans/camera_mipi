@@ -215,12 +215,30 @@ lp_rx_data_p作为lp的数据输出，最终流入到了line_reset_generator模�
 **DPHY给出的16位raw信号被一分二，分别传入各自的mipi_csi_rx_byte_aligner中，每八位分开处理。**
 
 ### mipi_csi_rx_byte_aligner模块的分析
-该模块的工作原理与DPHY的输出信号有关。
+**该模块的工作原理与DPHY的输出信号有关。**
+`Received Raw unaligned bits from DDR RX module outputs Aligned bytes.
+Bytes on MIPI lane does not have any defined byte boundary so this modules Looks for always constant first byte 0xB8 on wire, 
+once 0xB8 is found, byte boundary offset is determined, set output valid to active and start outputting correct bytes
+stays reset when data lane are in MIPI LP state , modules will omit maximum 2 last bytes because of reset constrains. `
 
-该模块的核心语句如下：
+该模块的核心语句节选如下：
 ```verilog
 input [(MIPI_GEAR-1):0]byte_i;
 output reg [(MIPI_GEAR-1):0]byte_o;
+
+reg [3:0]offset;
+reg [3:0]sync_offset;
+integer i;
+reg  [(MIPI_GEAR-1):0] last_byte;
+reg  [(MIPI_GEAR-1):0] last_byte_2;
+wire [((MIPI_GEAR * 2) - 1):0]word;
+
+reg [(MIPI_GEAR-1):0] output_reg;
+reg valid_reg;
+reg valid_reg_stage2;
+assign word = {last_byte,  last_byte_2};
+
+localparam [7:0]SYNC_BYTE = 8'hB8;
 
 last_byte 	<= byte_i;
 last_byte_2     <= last_byte;
@@ -235,5 +253,21 @@ begin
 	sync_offset <= offset;
 	valid_reg <= 1'h1;
 end
-```
 
+always @(*)
+begin
+        offset = 0;
+	synced = 0;
+for (i= (MIPI_GEAR-1) ; i >= 0; i = i - 1) //need to have loop 16 time not 17 because if input bytes are already aligned they will fall on last_byte or byte_i
+    begin						   // have to loop downwards
+	if ((word[(i) +: 8] == SYNC_BYTE))
+	begin
+	synced = 1'b1;
+	offset = i[3:0];
+	end 
+    end
+end
+
+```
+**word是前后两个8位的组合，last_word是对word的一次延时，byte_o是last_word中的某8位**
+**always @(\*)的作用是**
