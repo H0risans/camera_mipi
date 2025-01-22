@@ -137,4 +137,17 @@ csi_dphy  mipi_csi_phy_inst1(.sync_clk_i(osc_clk),
 不同的格式的处理方式也各不一致。
 
 dphy输出的hs、lp信号的理解是接下来的关键。
+以下是在该例程中，视频流数据的流向：
 
+```
+|camera| 
+- |csi_dphy| 
+- |mipi_csi_rx_byte_aligner|
+- |mipi_csi_rx_lane_aligner|
+- |mipi_csi_rx_packet_decoder_*b*lane|   
+- |mipi_csi_rx_raw_depacker_*b*lane|
+- |debayer_filter|//去马赛克，是之后ISP模块的位置
+- |rgb_to_yuv| 
+- |output_reformatter|//USB3.0输出
+- |上位机显示|
+```
